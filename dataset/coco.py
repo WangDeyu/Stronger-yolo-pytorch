@@ -22,7 +22,7 @@ class COCOdataset(BaseDataset):
             cat_id: i
             for i, cat_id in enumerate(self.cat_ids)
         }
-        self.img_ids, self.img_infos = self._filter_imgs()
+        self._ids, self.img_infos = self._filter_imgs()
 
     def _filter_imgs(self, min_size=32):
         # Filter images without ground truths.
@@ -41,7 +41,7 @@ class COCOdataset(BaseDataset):
         return img_ids, img_infos
 
     def _load_ann_info(self, idx):
-        img_id = self.img_ids[idx]
+        img_id = self._ids[idx]
         ann_ids = self.coco.getAnnIds(imgIds=img_id)
         ann_info = self.coco.loadAnns(ann_ids)
         return ann_info
@@ -81,7 +81,7 @@ class COCOdataset(BaseDataset):
         return ann
 
     def __len__(self):
-        return len(self.img_infos) // self.batch_size
+        return len(self._ids) // self.batch_size
 
     def _parse_annotation(self,itemidx,random_trainsize):
         img_info = self.img_infos[itemidx]
