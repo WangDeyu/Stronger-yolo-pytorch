@@ -3,7 +3,7 @@
 import tensorflow as tf
 
 
-def batch_normalization(input_data, input_c, training, decay=0.9):
+def batch_normalization(input_data, input_c, training, decay=0.9, statedict=None):
     """
     :param input_data: format is 'NHWC'
     :param input_c: channel of input_data
@@ -12,28 +12,38 @@ def batch_normalization(input_data, input_c, training, decay=0.9):
     :return: BN后的数据
     """
     with tf.variable_scope('BatchNorm'):
-        gamma = tf.get_variable(name='gamma', shape=input_c, dtype=tf.float32,
-                                initializer=tf.ones_initializer, trainable=True)
-        beta = tf.get_variable(name='beta', shape=input_c, dtype=tf.float32,
-                               initializer=tf.zeros_initializer, trainable=True)
-        moving_mean = tf.get_variable(name='moving_mean', shape=input_c, dtype=tf.float32,
-                                      initializer=tf.zeros_initializer, trainable=False)
-        moving_variance = tf.get_variable(name='moving_variance', shape=input_c, dtype=tf.float32,
-                                          initializer=tf.ones_initializer, trainable=False)
-        # def mean_and_var_update():
-        #     axes = (0, 1, 2)
-        #     batch_mean = tf.reduce_mean(input_data, axis=axes)
-        #     batch_var = tf.reduce_mean(tf.pow(input_data - batch_mean, 2), axis=axes)
-        #     with tf.control_dependencies([tf.assign(moving_mean, moving_mean * decay + batch_mean * (1 - decay)),
-        #                                   tf.assign(moving_variance,
-        #                                             moving_variance * decay + batch_var * (1 - decay))]):
-        #         return tf.identity(batch_mean), tf.identity(batch_var)
+        if statedict is None:
+            gamma = tf.get_variable(name='gamma', shape=input_c, dtype=tf.float32,
+                                    initializer=tf.ones_initializer, trainable=True)
+            beta = tf.get_variable(name='beta', shape=input_c, dtype=tf.float32,
+                                   initializer=tf.zeros_initializer, trainable=True)
+            moving_mean = tf.get_variable(name='moving_mean', shape=input_c, dtype=tf.float32,
+                                          initializer=tf.zeros_initializer, trainable=False)
+            moving_variance = tf.get_variable(name='moving_variance', shape=input_c, dtype=tf.float32,
+                                              initializer=tf.ones_initializer, trainable=False)
+        else:
+            gamma = tf.convert_to_tensor(statedict[0], name='gamma')
+            beta = tf.convert_to_tensor(statedict[1], name='beta')
+            moving_mean = tf.convert_to_tensor(statedict[2], name='moving_mean')
+            moving_variance = tf.convert_to_tensor(statedict[3], name='moving_variance')
+
+        def mean_and_var_update():
+            axes = (0, 1, 2)
+            batch_mean = tf.reduce_mean(input_data, axis=axes)
+            batch_var = tf.reduce_mean(tf.pow(input_data - batch_mean, 2), axis=axes)
+            with tf.control_dependencies([tf.assign(moving_mean, moving_mean * decay + batch_mean * (1 - decay)),
+                                          tf.assign(moving_variance,
+                                                    moving_variance * decay + batch_var * (1 - decay))]):
+                return tf.identity(batch_mean), tf.identity(batch_var)
+
         # mean, variance = tf.cond(training, mean_and_var_update, lambda: (moving_mean, moving_variance))
-        # output=tf.nn.batch_normalization(input_data, mean, variance, beta, gamma, 1e-05,name='bn')
-        output,_,_=tf.nn.fused_batch_norm(x=input_data, mean=moving_mean, variance=moving_variance, offset=beta, scale=gamma, epsilon=1e-05,name='bn',is_training=False)
+        # output = tf.nn.batch_normalization(input_data, mean, variance, beta, gamma, 1e-05, name='bn')
+        output, _, _ = tf.nn.fused_batch_norm(x=input_data, mean=moving_mean, variance=moving_variance, offset=beta,
+                                              scale=gamma, epsilon=1e-05, name='bn', is_training=False)
         return output
 
-def group_normalization(input_data, input_c, num_group=32, eps=1e-5):
+
+def group_normalization(input_data, input_c, num_group=32, eps=1e-5, statedict=None):
     """
     :param input_data: format is 'NHWC'，C必须是num_group的整数倍
     :param input_c: channel of input_data
@@ -59,7 +69,7 @@ def group_normalization(input_data, input_c, num_group=32, eps=1e-5):
     return gamma * input_data + beta
 
 
-def convolutional(name, input_data, filters_shape, training, downsample=False, activate=True, bn=True):
+def convolutional(name, input_data, filters_shape, training, downsample=False, activate=True, bn=True, statedict=None):
     """
     :param name: convolutional layer 的名字
     :param input_data: shape为(batch, height, width, channels)
@@ -80,21 +90,34 @@ def convolutional(name, input_data, filters_shape, training, downsample=False, a
         else:
             strides = (1, 1, 1, 1)
             padding = "SAME"
-
-        weight = tf.get_variable(name='weights', dtype=tf.float32, trainable=True,
-                                 shape=filters_shape, initializer=tf.random_normal_initializer(stddev=0.01))
-        conv = tf.nn.conv2d(input=input_data, filter=weight, strides=strides, padding=padding)
-        if bn:
-            conv = batch_normalization(input_data=conv, input_c=filters_shape[-1], training=training)
+        if statedict is None:
+            weight = tf.get_variable(name='weights', dtype=tf.float32, trainable=True,
+                                     shape=filters_shape, initializer=tf.random_normal_initializer(stddev=0.01))
         else:
-            bias = tf.get_variable(name='bias', shape=filters_shape[-1], trainable=True,
-                                   dtype=tf.float32, initializer=tf.constant_initializer(0.0))
+            #iohw->hwoi
+            weight = statedict[0].transpose(2, 3, 1, 0)
+            weight = tf.convert_to_tensor(weight, name='weights')
+        conv = tf.nn.conv2d(input=input_data, filter=weight, strides=strides, padding=padding)
+
+        if bn:
+            if statedict is None:
+                conv = batch_normalization(input_data=conv, input_c=filters_shape[-1], training=training)
+            else:
+                conv = batch_normalization(input_data=conv, input_c=filters_shape[-1], training=training,
+                                           statedict=statedict[1:])
+        else:
+            if statedict is None:
+                bias = tf.get_variable(name='bias', shape=filters_shape[-1], trainable=True,
+                                       dtype=tf.float32, initializer=tf.constant_initializer(0.0))
+            else:
+                bias = tf.convert_to_tensor(statedict[1], name='bias')
             conv = tf.nn.bias_add(conv, bias)
         if activate:
             conv = tf.nn.relu6(conv)
     return conv
 
-def separable_conv(name, input_data, input_c, output_c, training, downsample=False):
+
+def separable_conv(name, input_data, input_c, output_c, training, downsample=False, statedict=None):
     """
     :param name:
     :param input_data: shape 为NHWC
@@ -114,24 +137,39 @@ def separable_conv(name, input_data, input_c, output_c, training, downsample=Fal
             else:
                 strides = (1, 1, 1, 1)
                 padding = "SAME"
-            dwise_weight = tf.get_variable(name='depthwise_weights', dtype=tf.float32, trainable=True,
+            if statedict is None:
+                dwise_weight = tf.get_variable(name='depthwise_weights', dtype=tf.float32, trainable=True,
                                            shape=(3, 3, input_c, 1),
                                            initializer=tf.random_normal_initializer(stddev=0.01))
+            else:
+                dwise_weight = statedict[0].transpose(2, 3, 0, 1)
+                dwise_weight = tf.convert_to_tensor(dwise_weight, name='depthwise_weights')
             dwise_conv = tf.nn.depthwise_conv2d(input=input_data, filter=dwise_weight, strides=strides, padding=padding)
-            dwise_conv = batch_normalization(input_data=dwise_conv, input_c=input_c, training=training)
+            if statedict is None:
+                dwise_conv = batch_normalization(input_data=dwise_conv, input_c=input_c, training=training)
+            else:
+                dwise_conv = batch_normalization(input_data=dwise_conv, input_c=input_c, training=training,statedict=statedict[1:5])
             dwise_conv = tf.nn.relu6(dwise_conv)
 
         with tf.variable_scope('pointwise'):
-            pwise_weight = tf.get_variable(name='pointwise_weights', dtype=tf.float32, trainable=True,
+            if statedict is None:
+                pwise_weight = tf.get_variable(name='pointwise_weights', dtype=tf.float32, trainable=True,
                                            shape=(1, 1, input_c, output_c),
                                            initializer=tf.random_normal_initializer(stddev=0.01))
+            else:
+                pwise_weight = statedict[5].transpose(2, 3, 1, 0)
+                pwise_weight = tf.convert_to_tensor(pwise_weight, name='pointwise_weights')
             pwise_conv = tf.nn.conv2d(input=dwise_conv, filter=pwise_weight, strides=(1, 1, 1, 1), padding="SAME")
-            pwise_conv = batch_normalization(input_data=pwise_conv, input_c=output_c, training=training)
+            if statedict is None:
+                pwise_conv = batch_normalization(input_data=pwise_conv, input_c=output_c, training=training)
+            else:
+                pwise_conv = batch_normalization(input_data=pwise_conv, input_c=input_c, training=training,statedict=statedict[6:10])
+
             pwise_conv = tf.nn.relu6(pwise_conv)
         return pwise_conv
 
 
-def inverted_residual(name, input_data, input_c, output_c, training, downsample=False, t=6):
+def inverted_residual(name, input_data, input_c, output_c, training, downsample=False, t=6, statedict=None):
     """
     :param name:
     :param input_data: shape 为NHWC
@@ -144,19 +182,28 @@ def inverted_residual(name, input_data, input_c, output_c, training, downsample=
     """
     with tf.variable_scope(name):
         expand_c = t * input_c
-
         with tf.variable_scope('expand'):
             if t > 1:
-                expand_weight = tf.get_variable(name='weights', dtype=tf.float32, trainable=True,
-                                                shape=(1, 1, input_c, expand_c),
-                                                initializer=tf.random_normal_initializer(stddev=0.01))
+                if statedict is None:
+                    expand_weight = tf.get_variable(name='weights', dtype=tf.float32, trainable=True,
+                                                    shape=(1, 1, input_c, expand_c),
+                                                    initializer=tf.random_normal_initializer(stddev=0.01))
+                else:
+                    expand_weight = statedict[0].transpose(2, 3, 1, 0)
+                    expand_weight = tf.convert_to_tensor(expand_weight, name='weights')
                 expand_conv = tf.nn.conv2d(input=input_data, filter=expand_weight, strides=(1, 1, 1, 1), padding="SAME")
-                expand_conv = batch_normalization(input_data=expand_conv, input_c=expand_c, training=training)
+                if statedict is None:
+                    expand_conv = batch_normalization(input_data=expand_conv, input_c=expand_c, training=training)
+                else:
+                    expand_conv = batch_normalization(input_data=expand_conv, input_c=expand_c, training=training,statedict=statedict[1:5])
+
                 expand_conv = tf.nn.relu6(expand_conv)
             else:
                 expand_conv = input_data
 
         with tf.variable_scope('depthwise'):
+            if statedict is not None and len(statedict)==15:
+                statedict=statedict[5:]
             if downsample:
                 pad_data = tf.constant([[0, 0], [1, 1], [1, 1], [0, 0]])
                 expand_conv = tf.pad(expand_conv, pad_data, 'CONSTANT')
@@ -165,19 +212,35 @@ def inverted_residual(name, input_data, input_c, output_c, training, downsample=
             else:
                 strides = (1, 1, 1, 1)
                 padding = "SAME"
-            dwise_weight = tf.get_variable(name='depthwise_weights', dtype=tf.float32, trainable=True,
-                                           shape=(3, 3, expand_c, 1),
-                                           initializer=tf.random_normal_initializer(stddev=0.01))
-            dwise_conv = tf.nn.depthwise_conv2d(input=expand_conv, filter=dwise_weight, strides=strides, padding=padding)
-            dwise_conv = batch_normalization(input_data=dwise_conv, input_c=expand_c, training=training)
+            if statedict is None:
+                dwise_weight = tf.get_variable(name='depthwise_weights', dtype=tf.float32, trainable=True,
+                                               shape=(3, 3, expand_c, 1),
+                                               initializer=tf.random_normal_initializer(stddev=0.01))
+            else:
+                dwise_weight = statedict[0].transpose(2, 3, 0, 1)
+                dwise_weight = tf.convert_to_tensor(dwise_weight, name='depthwise_weights')
+            dwise_conv = tf.nn.depthwise_conv2d(input=expand_conv, filter=dwise_weight, strides=strides,
+                                                padding=padding)
+            if statedict is None:
+                dwise_conv = batch_normalization(input_data=dwise_conv, input_c=expand_c, training=training)
+            else:
+                dwise_conv = batch_normalization(input_data=dwise_conv, input_c=expand_c, training=training,statedict=statedict[1:5])
             dwise_conv = tf.nn.relu6(dwise_conv)
 
         with tf.variable_scope('project'):
-            pwise_weight = tf.get_variable(name='weights', dtype=tf.float32, trainable=True,
-                                           shape=(1, 1, expand_c, output_c),
-                                           initializer=tf.random_normal_initializer(stddev=0.01))
+            if statedict is None:
+                pwise_weight = tf.get_variable(name='weights', dtype=tf.float32, trainable=True,
+                                               shape=(1, 1, expand_c, output_c),
+                                               initializer=tf.random_normal_initializer(stddev=0.01))
+            else:
+                pwise_weight = statedict[5].transpose(2, 3, 1, 0)
+                pwise_weight = tf.convert_to_tensor(pwise_weight, name='weights')
             pwise_conv = tf.nn.conv2d(input=dwise_conv, filter=pwise_weight, strides=(1, 1, 1, 1), padding="SAME")
-            pwise_conv = batch_normalization(input_data=pwise_conv, input_c=output_c, training=training)
+            if statedict is None:
+                pwise_conv = batch_normalization(input_data=pwise_conv, input_c=output_c, training=training)
+            else:
+                pwise_conv = batch_normalization(input_data=pwise_conv, input_c=output_c, training=training,statedict=statedict[6:10])
+
         if downsample or pwise_conv.get_shape().as_list()[3] != input_data.get_shape().as_list()[3]:
             return pwise_conv
         else:
@@ -242,15 +305,17 @@ def upsample(name, input_data):
         output = tf.image.resize_nearest_neighbor(input_data, (input_shape[1] * 2, input_shape[2] * 2))
     return output
 
-def upsample_decode(name, input_data,shape1,shape2):
+
+def upsample_decode(name, input_data, shape1, shape2):
     """
     :param name: upsample层的名字
     :param input_data: shape为(batch, height, width, channels)
     :return:
     """
     with tf.variable_scope(name):
-        output = tf.image.resize_nearest_neighbor(input_data, (shape1*2, shape2*2))
+        output = tf.image.resize_nearest_neighbor(input_data, (shape1 * 2, shape2 * 2))
     return output
+
 
 def decode(name, conv_output, num_classes, stride):
     """
@@ -268,15 +333,15 @@ def decode(name, conv_output, num_classes, stride):
         batch_size = conv_shape[0]
         output_size = conv_shape[1]
         gt_per_grid = conv_shape[3] / (5 + num_classes)
-        
+
         conv_output = tf.reshape(conv_output, (batch_size, output_size, output_size, gt_per_grid, 5 + num_classes))
         # conv_raw_dx1dy1, conv_raw_dx2dy2, conv_raw_conf, conv_raw_prob = tf.split(conv_output,[2,2,1,num_classes],axis=4)
-        conv_raw_dx1dy1, conv_raw_dx2dy2, conv_raw_conf = tf.split(conv_output,[2,2,1],axis=4)
+        conv_raw_dx1dy1, conv_raw_dx2dy2, conv_raw_conf = tf.split(conv_output, [2, 2, 1], axis=4)
         # conv_raw_dx1dy1 = conv_output[:, :, :, :, 0:2]
         # conv_raw_dx2dy2 = conv_output[:, :, :, :, 2:4]
         # conv_raw_conf = conv_output[:, :, :, :, 4:5]
         # conv_raw_prob = conv_output[:, :, :, :, 5:]
-        
+
         # 获取yolo的输出feature map中每个grid左上角的坐标
         # 需注意的是图像的坐标轴方向为
         #  - - - - > x
@@ -285,13 +350,13 @@ def decode(name, conv_output, num_classes, stride):
         # ↓
         # y
         # 在图像中标注坐标时通常用(y,x)，但此处为了与coor的存储格式(dx, dy, dw, dh)保持一致，将grid的坐标存储为(x, y)的形式
-        
+
         y = tf.tile(tf.range(output_size, dtype=tf.int32)[:, tf.newaxis], [1, output_size])
         x = tf.tile(tf.range(output_size, dtype=tf.int32)[tf.newaxis, :], [output_size, 1])
         xy_grid = tf.concat([x[:, :, tf.newaxis], y[:, :, tf.newaxis]], axis=-1)
         xy_grid = tf.tile(xy_grid[tf.newaxis, :, :, tf.newaxis, :], [batch_size, 1, 1, gt_per_grid, 1])
         xy_grid = tf.cast(xy_grid, tf.float32)
-        
+
         # (1)对xmin, ymin, xmax, ymax进行decode
         # dx_min, dy_min = exp(rawdx1dy1)
         # dx_max, dy_max = exp(rawdx2dy2)
@@ -300,14 +365,15 @@ def decode(name, conv_output, num_classes, stride):
         pred_xymin = (xy_grid + 0.5 - tf.exp(conv_raw_dx1dy1)) * stride
         pred_xymax = (xy_grid + 0.5 + tf.exp(conv_raw_dx2dy2)) * stride
         pred_corner = tf.concat([pred_xymin, pred_xymax], axis=-1)
-        
+
         # (2)对confidence进行decode
         pred_conf = tf.sigmoid(conv_raw_conf)
-        
+
         pred_bbox = tf.concat([pred_corner, pred_conf], axis=-1)
         return pred_bbox
 
-def decode_validate(name, conv_output, num_classes, stride,shape,gt_pergrid):
+
+def decode_validate(name, conv_output, num_classes, stride, shape, gt_pergrid):
     """
     :param conv_output: yolo的输出，shape为(batch_size, output_size, output_size, gt_per_grid * (5 + num_classes))
     :param num_classes: 类别的数量
@@ -321,12 +387,12 @@ def decode_validate(name, conv_output, num_classes, stride,shape,gt_pergrid):
     with tf.variable_scope(name):
         conv_output = tf.reshape(conv_output, (1, shape, shape, gt_pergrid, 5 + num_classes))
         # conv_raw_dx1dy1, conv_raw_dx2dy2, conv_raw_conf, conv_raw_prob = tf.split(conv_output, [2, 2, 1, num_classes],axis=4)
-        conv_raw_dx1dy1, conv_raw_dx2dy2, conv_raw_conf = tf.split(conv_output, [2, 2, 1],axis=4)
-        y = tf.tile(tf.expand_dims(tf.range(shape, dtype=tf.int32),1), [1, shape])
-        x = tf.tile(tf.expand_dims(tf.range(shape, dtype=tf.int32),0), [shape, 1])
+        conv_raw_dx1dy1, conv_raw_dx2dy2, conv_raw_conf = tf.split(conv_output, [2, 2, 1], axis=4)
+        y = tf.tile(tf.expand_dims(tf.range(shape, dtype=tf.int32), 1), [1, shape])
+        x = tf.tile(tf.expand_dims(tf.range(shape, dtype=tf.int32), 0), [shape, 1])
         xy_grid = tf.stack([x, y], axis=2)
-        xy_grid=tf.expand_dims(xy_grid,0)
-        xy_grid=tf.expand_dims(xy_grid,3)
+        xy_grid = tf.expand_dims(xy_grid, 0)
+        xy_grid = tf.expand_dims(xy_grid, 3)
         xy_grid = tf.tile(xy_grid, [1, 1, 1, gt_pergrid, 1])
         xy_grid = tf.cast(xy_grid, tf.float32)
         pred_xymin = (xy_grid + 0.5 - tf.exp(conv_raw_dx1dy1)) * stride
@@ -339,45 +405,4 @@ def decode_validate(name, conv_output, num_classes, stride,shape,gt_pergrid):
 
         pred_bbox = tf.concat([pred_corner, pred_conf], axis=-1)
         # pred_bbox = tf.concat([pred_corner, pred_conf, pred_prob], axis=-1)
-        return pred_bbox
-
-def decode_nms(name, conv_output, num_classes, stride,shape,gt_pergrid,originH,originW,inputsize):
-    """
-    :param conv_output: yolo的输出，shape为(batch_size, output_size, output_size, gt_per_grid * (5 + num_classes))
-    :param num_classes: 类别的数量
-    :param stride: YOLO的stride
-    :return:
-    pred_bbox: shape为(batch_size, output_size, output_size, gt_per_grid, 5 + num_classes)
-    5 + num_classes指的是预测bbox的(xmin, ymin, xmax, ymax, confidence, probability)
-    其中(xmin, ymin, xmax, ymax)是预测bbox的左上角和右下角坐标，大小是相对于input_size的，
-    confidence是预测bbox属于物体的概率，probability是条件概率分布
-    """
-    with tf.variable_scope(name):
-        conv_output = tf.reshape(conv_output, (1, shape, shape, gt_pergrid, 5 + num_classes))
-        # conv_raw_dx1dy1, conv_raw_dx2dy2, conv_raw_conf, conv_raw_prob = tf.split(conv_output, [2, 2, 1, num_classes],axis=4)
-        conv_raw_dx1dy1, conv_raw_dx2dy2, conv_raw_conf = tf.split(conv_output, [2, 2, 1],axis=4)
-        y = tf.tile(tf.expand_dims(tf.range(shape, dtype=tf.int32),1), [1, shape])
-        x = tf.tile(tf.expand_dims(tf.range(shape, dtype=tf.int32),0), [shape, 1])
-        xy_grid = tf.stack([x, y], axis=2)
-        xy_grid=tf.expand_dims(xy_grid,0)
-        xy_grid=tf.expand_dims(xy_grid,3)
-        xy_grid = tf.tile(xy_grid, [1, 1, 1, gt_pergrid, 1])
-        xy_grid = tf.cast(xy_grid, tf.float32)
-        pred_xymin = (xy_grid + 0.5 - tf.exp(conv_raw_dx1dy1)) * stride
-        pred_xymax = (xy_grid + 0.5 + tf.exp(conv_raw_dx2dy2)) * stride
-
-        resize_ratio= tf.minimum(inputsize/originH,inputsize/originW)
-        # tf.Print(resize_ratio)
-        dw= (inputsize-resize_ratio*originW)/2
-        dh= (inputsize-resize_ratio*originH)/2
-        xmin,ymin=tf.split(pred_xymin,[1,1],axis=4)
-        xmax,ymax=tf.split(pred_xymax,[1,1],axis=4)
-        xmin=(xmin-dw)/resize_ratio
-        xmax=(xmax-dw)/resize_ratio
-        ymin=(ymin-dh)/resize_ratio
-        ymax=(ymax-dh)/resize_ratio
-        # pred_corner = tf.concat([pred_xymin, pred_xymax], axis=-1)
-        pred_corner = tf.concat([ymin,xmin,ymax,xmax], axis=-1)
-        pred_conf = tf.sigmoid(conv_raw_conf)
-        pred_bbox = tf.concat([pred_corner, pred_conf], axis=-1)
         return pred_bbox
