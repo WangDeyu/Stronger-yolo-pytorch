@@ -8,3 +8,4 @@ weights/
 *.txt
 transfer.py
 local.py
+*.pb

@@ -386,8 +386,7 @@ def decode_validate(name, conv_output, num_classes, stride, shape, gt_pergrid):
     """
     with tf.variable_scope(name):
         conv_output = tf.reshape(conv_output, (1, shape, shape, gt_pergrid, 5 + num_classes))
-        # conv_raw_dx1dy1, conv_raw_dx2dy2, conv_raw_conf, conv_raw_prob = tf.split(conv_output, [2, 2, 1, num_classes],axis=4)
-        conv_raw_dx1dy1, conv_raw_dx2dy2, conv_raw_conf = tf.split(conv_output, [2, 2, 1], axis=4)
+        conv_raw_dx1dy1, conv_raw_dx2dy2, conv_raw_conf, conv_raw_prob = tf.split(conv_output, [2, 2, 1, num_classes],axis=4)
         y = tf.tile(tf.expand_dims(tf.range(shape, dtype=tf.int32), 1), [1, shape])
         x = tf.tile(tf.expand_dims(tf.range(shape, dtype=tf.int32), 0), [shape, 1])
         xy_grid = tf.stack([x, y], axis=2)
@@ -401,8 +400,6 @@ def decode_validate(name, conv_output, num_classes, stride, shape, gt_pergrid):
         # (2)对confidence进行decode
         pred_conf = tf.sigmoid(conv_raw_conf)
         # (3)对probability进行decode
-        # pred_prob = tf.sigmoid(conv_raw_prob)
-
-        pred_bbox = tf.concat([pred_corner, pred_conf], axis=-1)
-        # pred_bbox = tf.concat([pred_corner, pred_conf, pred_prob], axis=-1)
+        pred_prob = tf.sigmoid(conv_raw_prob)
+        pred_bbox = tf.concat([pred_corner, pred_conf, pred_prob], axis=-1)
         return pred_bbox
