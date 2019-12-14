@@ -35,6 +35,13 @@ strongerv2-Pruned(20% pruned) |Darknet53|76.8 |49.8|45.2|
 
 Note:  
 1.Tuning _C.Prune.sr can get better prune ratio, I picked the official number 0.01.  
+
+## Deployment on mobile devices(Update 2019-12-14)
+check [deploy.md](docs/deploy.md) for more details.
+- [x] pytorch -> tensorflow pb
+- [x] pytorch -> MNN(Alibaba)
+- [ ] pytorch -> NPU(HUAWEI)
+
 ## Supported backbone
 - [x] MobileV2(Pruning suppoted)
 - [x] DarkNet(Pruning supported)
