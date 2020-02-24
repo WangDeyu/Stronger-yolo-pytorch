@@ -83,6 +83,11 @@ MODEL:
     "toothbrush"
   ]
   numcls: 80
+  modeltype: StrongerV3
+  backbone: 'mobilenetv2'
+  backbone_pretrained: 'checkpoints/mobilenet_v2.pth'
+  clsfocal: True
+  seprelu: False
 EXPER:
   experiment_name: "coco512"
   train_sizes: [480,512,544]
